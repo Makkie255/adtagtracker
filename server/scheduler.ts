@@ -1,5 +1,5 @@
 import cron from "node-cron";
-import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
 import { db } from "./db";
 import {
   notifications,
@@ -235,19 +235,10 @@ async function sendMonthlyReports() {
 }
 
 // ============================================================================
-// Daily housekeeping — purge tag changes older than 60 days
+// Daily housekeeping — expired/used invitations + password resets
 // ============================================================================
 async function purgeOldData() {
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - 60);
-  const deleted = await db
-    .delete(tagChanges)
-    .where(lt(tagChanges.changeDate, cutoff))
-    .returning({ id: tagChanges.id });
-  if (deleted.length) {
-    console.log(`[scheduler] purged ${deleted.length} tag_changes older than 60 days`);
-  }
-  // Also purge expired/used invitations + password resets older than 30 days
+  // Purge expired/used invitations + password resets older than 30 days
   const oldExpiry = new Date();
   oldExpiry.setDate(oldExpiry.getDate() - 30);
   // we don't import these tables here; keep simple via raw SQL
@@ -275,7 +266,7 @@ export function startScheduler() {
   cron.schedule("0 3 * * *", () => {
     purgeOldData().catch((e) => console.error("[scheduler] purge error", e));
   });
-  console.log("[scheduler] started (scan tick 10m · monthly reports · daily purge 03:00)");
+  console.log("[scheduler] started (scan tick 10m · monthly reports · daily token cleanup 03:00)");
 }
 
 export { tickScans, sendMonthlyReports, purgeOldData };
