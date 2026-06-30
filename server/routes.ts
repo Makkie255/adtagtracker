@@ -454,6 +454,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   app.get("/api/sites/:id/scans", requireAuth, async (req, res) => {
+    const [site] = await db.select().from(sites).where(eq(sites.id, req.params.id));
+    if (!site) return res.status(404).json({ message: "Site not found" });
+    const user = req.user as any;
+    if (user.role !== "admin" && site.ownerUserId !== user.id)
+      return res.status(403).json({ message: "Forbidden" });
+
     const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 50, 1), 500);
     const offset = Math.max(parseInt(req.query.offset as string) || 0, 0);
     const rows = await db
@@ -463,6 +469,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
       .orderBy(desc(scans.startedAt))
       .limit(limit)
       .offset(offset);
+    res.json(rows);
+  });
+
+  app.get("/api/sites/:id/scans/:scanId/tags", requireAuth, async (req, res) => {
+    const [site] = await db.select().from(sites).where(eq(sites.id, req.params.id));
+    if (!site) return res.status(404).json({ message: "Site not found" });
+    const user = req.user as any;
+    if (user.role !== "admin" && site.ownerUserId !== user.id)
+      return res.status(403).json({ message: "Forbidden" });
+
+    const [scan] = await db
+      .select()
+      .from(scans)
+      .where(and(eq(scans.id, req.params.scanId), eq(scans.siteId, req.params.id)));
+    if (!scan) return res.status(404).json({ message: "Scan not found" });
+
+    const rows = await db.select().from(detectedTags).where(eq(detectedTags.scanId, scan.id));
     res.json(rows);
   });
 

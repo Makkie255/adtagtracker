@@ -613,7 +613,7 @@ export default function SiteDetail() {
               ) : (scansQ.data || []).length === 0 ? (
                 <p className="text-sm text-muted-foreground py-8 text-center">No scans yet. Run a scan to get started.</p>
               ) : (
-                <ScanHistory scans={(scansQ.data || []).map(toScanRecord)} />
+                <ScanHistory siteId={siteId!} scans={(scansQ.data || []).map(toScanRecord)} />
               )}
             </CardContent>
           </Card>

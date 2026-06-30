@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   Download,
   FileText,
+  FileSpreadsheet,
   Globe,
   TrendingUp,
   Activity,
@@ -30,6 +31,7 @@ import {
   useSiteScans,
   useSiteTags,
 } from "@/lib/api";
+import { exportReportToExcel } from "@/lib/report-export";
 
 const RANGE_DAYS: Record<string, number> = {
   "last-7-days": 7,
@@ -106,8 +108,20 @@ export default function Reports() {
     setSelectedSite(siteId);
   };
 
-  const handleExport = (formatKind: "csv" | "json") => {
+  const handleExport = (formatKind: "csv" | "json" | "xlsx") => {
     if (!site) return;
+    if (formatKind === "xlsx") {
+      exportReportToExcel({
+        site,
+        days,
+        stats,
+        changes: changesQ.data || [],
+        tags: tagsQ.data || [],
+        scans: inRangeScans,
+        platformBreakdown,
+      });
+      return;
+    }
     if (formatKind === "csv") {
       const rows = [
         ["Date", "Tag", "Change Type", "Tag URL", "Identified IDs"].join(","),
@@ -253,6 +267,10 @@ export default function Reports() {
                 data-testid="button-clear-report"
               >
                 New search
+              </Button>
+              <Button variant="outline" onClick={() => handleExport("xlsx")} data-testid="button-export-xlsx">
+                <FileSpreadsheet className="w-4 h-4 mr-2" />
+                Export Excel
               </Button>
               <Button variant="outline" onClick={() => handleExport("csv")} data-testid="button-export-csv">
                 <Download className="w-4 h-4 mr-2" />

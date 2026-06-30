@@ -235,6 +235,15 @@ export function useSiteTags(id: string | undefined) {
   return useQuery<ApiDetectedTag[]>({ queryKey: ["/api/sites", id, "tags"], enabled: !!id });
 }
 
+export function useScanTags(siteId: string | undefined, scanId: string | undefined) {
+  return useQuery<ApiDetectedTag[]>({
+    queryKey: ["/api/sites", siteId, "scans", scanId, "tags"],
+    enabled: !!siteId && !!scanId,
+    staleTime: 0,
+    retry: 1,
+  });
+}
+
 export function useTagPlatforms() {
   return useQuery<ApiTagPlatform[]>({ queryKey: ["/api/tag-platforms"] });
 }
