@@ -2,7 +2,7 @@ import { Resend } from "resend";
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const FROM = process.env.RESEND_FROM || "Ad Tag Tracker <onboarding@resend.dev>";
-const APP_URL = process.env.APP_URL || "http://localhost:5001";
+const APP_URL = process.env.APP_URL || "http://localhost:5000";
 
 let resend: Resend | null = null;
 if (RESEND_API_KEY) {
