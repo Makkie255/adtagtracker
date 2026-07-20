@@ -20,10 +20,7 @@ import Settings from "@/pages/settings";
 import AdminPanel from "@/pages/admin-panel";
 import Archived from "@/pages/archived";
 import Profile from "@/pages/profile";
-import Login from "@/pages/login";
-import AcceptInvite from "@/pages/accept-invite";
-import ForgotPassword from "@/pages/forgot-password";
-import ResetPassword from "@/pages/reset-password";
+import SignedOut from "@/pages/signed-out";
 
 function Router() {
   const { isLoggedIn, user, logout } = useAuth();
@@ -33,48 +30,44 @@ function Router() {
   useInactivityTimeout(() => {
     if (isLoggedIn) {
       logout().finally(() => {
-        window.location.href = "/login";
+        // No local login page — drop back to the signed-out screen, which
+        // points the user to the Internal Portal to sign in again.
+        window.location.href = "/";
       });
     }
   }, 15);
 
   return (
     <Switch>
-      <Route path="/login">
-        {() => (isLoggedIn ? <Redirect to="/" /> : <Login />)}
-      </Route>
-      <Route path="/accept-invite" component={AcceptInvite} />
-      <Route path="/forgot-password" component={ForgotPassword} />
-      <Route path="/reset-password" component={ResetPassword} />
       <Route path="/">
-        {() => (isLoggedIn ? <Dashboard /> : <Redirect to="/login" />)}
+        {() => (isLoggedIn ? <Dashboard /> : <SignedOut />)}
       </Route>
       <Route path="/sites">
-        {() => (isLoggedIn ? <Sites /> : <Redirect to="/login" />)}
+        {() => (isLoggedIn ? <Sites /> : <SignedOut />)}
       </Route>
       <Route path="/sites/new">
-        {() => (isLoggedIn ? <CreateSite /> : <Redirect to="/login" />)}
+        {() => (isLoggedIn ? <CreateSite /> : <SignedOut />)}
       </Route>
       <Route path="/sites/:id">
-        {() => (isLoggedIn ? <SiteDetail /> : <Redirect to="/login" />)}
+        {() => (isLoggedIn ? <SiteDetail /> : <SignedOut />)}
       </Route>
       <Route path="/reports">
-        {() => (isLoggedIn ? <Reports /> : <Redirect to="/login" />)}
+        {() => (isLoggedIn ? <Reports /> : <SignedOut />)}
       </Route>
       <Route path="/archived">
-        {() => (isLoggedIn ? <Archived /> : <Redirect to="/login" />)}
+        {() => (isLoggedIn ? <Archived /> : <SignedOut />)}
       </Route>
       <Route path="/profile">
         {() =>
           isLoggedIn && user ? (
             <Profile userName={user.name} userEmail={user.email} userRole={user.role} />
           ) : (
-            <Redirect to="/login" />
+            <SignedOut />
           )
         }
       </Route>
       <Route path="/settings">
-        {() => (isLoggedIn ? <Settings /> : <Redirect to="/login" />)}
+        {() => (isLoggedIn ? <Settings /> : <SignedOut />)}
       </Route>
       <Route path="/admin">
         {() => (isLoggedIn && user?.role === "admin" ? <AdminPanel /> : <Redirect to="/" />)}

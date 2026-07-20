@@ -1,16 +1,15 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 
-const PUBLIC_PATHS = ["/login", "/forgot-password", "/reset-password", "/accept-invite"];
-
-/** When the server returns 401, bounce the user to /login — unless they're
- *  already on a public route (e.g. the login page itself, or the password reset
- *  flow). Returns true if we redirected so callers can short-circuit. */
+/** When the server returns 401, bounce to the root — where the signed-out
+ *  screen points the user back to the Internal Portal to sign in again (there
+ *  is no local login page). Returns true if we redirected so callers can
+ *  short-circuit. */
 function handleUnauthorized(): boolean {
   if (typeof window === "undefined") return false;
-  const current = window.location.pathname;
-  if (PUBLIC_PATHS.some((p) => current === p || current.startsWith(p + "/"))) return false;
+  // Already at the root (signed-out screen) — nothing to do.
+  if (window.location.pathname === "/") return false;
   // Use a hard nav so React Query state is fully reset
-  window.location.href = "/login";
+  window.location.href = "/";
   return true;
 }
 

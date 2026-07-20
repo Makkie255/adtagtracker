@@ -101,16 +101,6 @@ export interface ApiUser {
   isOnline?: boolean;
 }
 
-export interface ApiInvitation {
-  id: string;
-  email: string;
-  name: string;
-  role: string;
-  acceptedAt: string | null;
-  expiresAt: string;
-  createdAt: string;
-}
-
 export interface ApiNotification {
   id: string;
   userId: string | null;
@@ -273,10 +263,6 @@ export function useAdminUsers() {
   });
 }
 
-export function useAdminInvitations() {
-  return useQuery<ApiInvitation[]>({ queryKey: ["/api/admin/invitations"] });
-}
-
 export function useRecipientDirectory() {
   return useQuery<ApiRecipientDirectory>({ queryKey: ["/api/recipient-directory"] });
 }
@@ -379,31 +365,12 @@ export function useTriggerScan() {
   });
 }
 
-export function useCreateInvitation() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (body: { email: string; name: string; role: "admin" | "user" }) => {
-      const r = await apiRequest("POST", "/api/admin/invitations", body);
-      return r.json();
-    },
-    onSuccess: () => invalidate(qc, [["/api/admin/invitations"]]),
-  });
-}
-
-export function useDeleteInvitation() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: async (id: string) => {
-      await apiRequest("DELETE", `/api/admin/invitations/${id}`);
-    },
-    onSuccess: () => invalidate(qc, [["/api/admin/invitations"]]),
-  });
-}
-
+// Roles are owned by the Portal (read-only here) — only local profile fields
+// such as the display name can be updated.
 export function useUpdateUser() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: async ({ id, body }: { id: string; body: { role?: "admin" | "user"; name?: string } }) => {
+    mutationFn: async ({ id, body }: { id: string; body: { name?: string } }) => {
       const r = await apiRequest("PUT", `/api/admin/users/${id}`, body);
       return r.json();
     },
@@ -483,14 +450,6 @@ export function useUpdateMySettings() {
       await apiRequest("PUT", "/api/me/settings", body);
     },
     onSuccess: () => invalidate(qc, [["/api/me/settings"], ["/api/auth/me"]]),
-  });
-}
-
-export function useChangePassword() {
-  return useMutation({
-    mutationFn: async (body: { currentPassword: string; newPassword: string }) => {
-      await apiRequest("POST", "/api/auth/change-password", body);
-    },
   });
 }
 

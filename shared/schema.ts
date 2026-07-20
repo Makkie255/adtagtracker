@@ -1,48 +1,41 @@
 import { sql } from "drizzle-orm";
-import { boolean, integer, jsonb, pgTable, primaryKey, text, timestamp, varchar } from "drizzle-orm/pg-core";
+import { boolean, integer, jsonb, pgTable, primaryKey, text, timestamp, uniqueIndex, varchar } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
 // ============================================================================
 // Users & Auth
 // ============================================================================
+//
+// Identity is owned by the Internal Portal. Users arrive via an SSO ticket
+// (see server/sso.ts); there are no local passwords. Each local row is linked
+// to a Portal user by `portalUserId` and carries the roles asserted by the
+// Portal on each hand-off.
 
-export const users = pgTable("users", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  email: text("email").notNull().unique(),
-  name: text("name").notNull(),
-  passwordHash: text("password_hash"),
-  role: varchar("role", { length: 20 }).notNull().default("user"), // admin | user
-  monthlyReportsOptIn: boolean("monthly_reports_opt_in").notNull().default(false),
-  defaultReportFrequency: varchar("default_report_frequency", { length: 20 }).notNull().default("monthly"),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-  lastLoginAt: timestamp("last_login_at"),
-});
+export const users = pgTable(
+  "users",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    // Portal user ID this local profile is linked to (set on first SSO login).
+    portalUserId: text("portal_user_id").unique(),
+    email: text("email").notNull().unique(),
+    name: text("name").notNull(),
+    // Roles asserted by the Portal, e.g. ["admin","manager"]. Overwritten on
+    // each SSO login — never edited locally.
+    roles: jsonb("roles").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
+    monthlyReportsOptIn: boolean("monthly_reports_opt_in").notNull().default(false),
+    defaultReportFrequency: varchar("default_report_frequency", { length: 20 }).notNull().default("monthly"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    lastLoginAt: timestamp("last_login_at"),
+  },
+  (table) => ({
+    // Case-insensitive uniqueness — the SSO upsert matches users by lower(email).
+    emailLowerUnique: uniqueIndex("users_email_lower_unique").on(sql`lower(${table.email})`),
+  }),
+);
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
-
-export const insertUserSchema = createInsertSchema(users).pick({
-  email: true,
-  name: true,
-  role: true,
-});
-
-// Invitations sent via Resend for new user signup
-export const invitations = pgTable("invitations", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  email: text("email").notNull(),
-  name: text("name").notNull(),
-  role: varchar("role", { length: 20 }).notNull().default("user"),
-  token: text("token").notNull().unique(),
-  invitedByUserId: varchar("invited_by_user_id").references(() => users.id, { onDelete: "set null" }),
-  acceptedAt: timestamp("accepted_at"),
-  expiresAt: timestamp("expires_at").notNull(),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
-});
-
-export type Invitation = typeof invitations.$inferSelect;
-export type InsertInvitation = typeof invitations.$inferInsert;
 
 // express-session table managed by connect-pg-simple (define it so drizzle creates it)
 export const session = pgTable("session", {
@@ -51,18 +44,16 @@ export const session = pgTable("session", {
   expire: timestamp("expire", { precision: 6 }).notNull(),
 });
 
-// Password reset tokens — issued when a user requests a forgot-password email.
-export const passwordResets = pgTable("password_resets", {
-  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  token: text("token").notNull().unique(),
-  usedAt: timestamp("used_at"),
+// Spent SSO ticket IDs (jti), tracked to enforce single use. A ticket's jti is
+// inserted before the session is created; a duplicate insert means replay.
+export const ssoTicketsUsed = pgTable("sso_tickets_used", {
+  jti: text("jti").primaryKey(),
+  usedAt: timestamp("used_at").notNull().defaultNow(),
   expiresAt: timestamp("expires_at").notNull(),
-  createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-export type PasswordReset = typeof passwordResets.$inferSelect;
-export type InsertPasswordReset = typeof passwordResets.$inferInsert;
+export type SsoTicketUsed = typeof ssoTicketsUsed.$inferSelect;
+export type InsertSsoTicketUsed = typeof ssoTicketsUsed.$inferInsert;
 
 // ============================================================================
 // Sites (websites being monitored)

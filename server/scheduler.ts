@@ -1,6 +1,7 @@
 import cron from "node-cron";
 import { and, desc, eq, gte, sql } from "drizzle-orm";
 import { db } from "./db";
+import { canManageAllSites } from "./auth";
 import {
   notifications,
   scans,
@@ -189,7 +190,7 @@ async function sendMonthlyReports() {
     const userSites = await db
       .select()
       .from(sites)
-      .where(user.role === "admin" ? sql`true` : eq(sites.ownerUserId, user.id));
+      .where(canManageAllSites(user) ? sql`true` : eq(sites.ownerUserId, user.id));
     if (!userSites.length) continue;
 
     let totalScans = 0;
@@ -235,19 +236,11 @@ async function sendMonthlyReports() {
 }
 
 // ============================================================================
-// Daily housekeeping — expired/used invitations + password resets
+// Daily housekeeping — expired single-use SSO ticket records
 // ============================================================================
 async function purgeOldData() {
-  // Purge expired/used invitations + password resets older than 30 days
-  const oldExpiry = new Date();
-  oldExpiry.setDate(oldExpiry.getDate() - 30);
-  // we don't import these tables here; keep simple via raw SQL
-  await db.execute(
-    sql`DELETE FROM invitations WHERE accepted_at IS NOT NULL AND accepted_at < ${oldExpiry}`,
-  );
-  await db.execute(
-    sql`DELETE FROM password_resets WHERE used_at IS NOT NULL AND used_at < ${oldExpiry}`,
-  );
+  // Spent SSO ticket rows are only needed until the ticket would have expired.
+  await db.execute(sql`DELETE FROM sso_tickets_used WHERE expires_at < now()`);
 }
 
 // ============================================================================

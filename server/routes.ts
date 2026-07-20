@@ -1,7 +1,5 @@
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
-import crypto from "crypto";
-import passport from "passport";
 import rateLimit from "express-rate-limit";
 import { and, desc, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -9,19 +7,23 @@ import { db } from "./db";
 import {
   detectedTags,
   insertSiteSchema,
-  invitations,
   notifications,
   notificationTeamMembers,
   notificationTeams,
-  passwordResets,
   scans,
   sites,
   tagChanges,
   tagPlatforms,
   users,
 } from "@shared/schema";
-import { hashPassword, requireAdmin, requireAuth, setupAuth, toPublicUser, touchUserActivity } from "./auth";
-import { sendInvitationEmail, sendPasswordResetEmail } from "./email";
+import { canManageAllSites, requireAdmin, requireAuth, setupAuth, toPublicUser, touchUserActivity } from "./auth";
+import {
+  consumeTicketJti,
+  purgeExpiredTickets,
+  safeNextPath,
+  upsertUserFromTicket,
+  verifyTicket,
+} from "./sso";
 import {
   handleChangesDetected,
   handleScanFailed,
@@ -31,29 +33,17 @@ import {
 } from "./scheduler";
 import { isUserPresent, markUserPresent } from "./presence";
 
+const SSO_SECRET = process.env.SSO_SECRET_AD_TAG_TRACKER || "";
+
 // ============================================================================
 // Rate limiters
 // ============================================================================
-const loginLimiter = rateLimit({
+const ssoLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10, // 10 attempts per 15 min per IP
+  max: 20, // SSO hand-offs per 15 min per IP
   standardHeaders: true,
   legacyHeaders: false,
-  message: { message: "Too many login attempts. Try again in 15 minutes." },
-});
-const passwordLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 5, // 5 forgot-password requests per hour per IP
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { message: "Too many password reset requests. Try again later." },
-});
-const inviteAcceptLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { message: "Too many attempts." },
+  message: { message: "Too many sign-in attempts. Try again in a few minutes." },
 });
 
 export async function registerRoutes(app: Express): Promise<Server> {
@@ -65,17 +55,40 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ==========================================================================
   // Auth
   // ==========================================================================
-  app.post("/api/auth/login", loginLimiter, (req, res, next) => {
-    passport.authenticate("local", (err: any, user: any, info: any) => {
-      if (err) return next(err);
-      if (!user) return res.status(401).json({ message: info?.message || "Invalid credentials" });
-      req.login(user, async (e) => {
+  // Single sign-on hand-off from the Internal Portal. The Portal POSTs a
+  // short-lived, single-use HS256 ticket here; we verify it, upsert the local
+  // profile, establish the session, and redirect into the app. There is no
+  // local password login.
+  app.post("/sso", ssoLimiter, async (req, res, next) => {
+    const ticket = typeof req.body?.ticket === "string" ? req.body.ticket : "";
+    const next_ = safeNextPath(req.body?.next ?? req.query?.next);
+    if (!ticket) return res.status(400).send("Missing SSO ticket.");
+
+    let claims;
+    try {
+      claims = verifyTicket(ticket, SSO_SECRET);
+    } catch (e: any) {
+      console.error("[sso] ticket verification failed:", e?.message || e);
+      return res.status(401).send("Invalid or expired sign-in link. Please reopen from the Internal Portal.");
+    }
+
+    // Enforce single use before establishing a session (replay protection).
+    const fresh = await consumeTicketJti(claims.jti, claims.exp);
+    if (!fresh) {
+      return res.status(401).send("This sign-in link has already been used. Please reopen from the Internal Portal.");
+    }
+    void purgeExpiredTickets().catch(() => undefined);
+
+    try {
+      const user = await upsertUserFromTicket(claims);
+      req.login(toPublicUser(user), (e) => {
         if (e) return next(e);
-        await db.update(users).set({ lastLoginAt: new Date() }).where(eq(users.id, user.id));
         markUserPresent(user.id);
-        res.json({ user });
+        res.redirect(next_);
       });
-    })(req, res, next);
+    } catch (e) {
+      next(e);
+    }
   });
 
   app.post("/api/auth/logout", (req, res) => {
@@ -98,201 +111,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ==========================================================================
-  // Forgot / Reset password
-  // ==========================================================================
-  app.post("/api/auth/forgot-password", passwordLimiter, async (req, res) => {
-    const schema = z.object({ email: z.string().email() });
-    const parsed = schema.safeParse(req.body);
-    // Always return 200 to avoid leaking which emails exist
-    if (!parsed.success) return res.json({ ok: true });
-
-    const email = parsed.data.email.toLowerCase();
-    const [user] = await db.select().from(users).where(eq(users.email, email));
-    if (!user) return res.json({ ok: true });
-
-    // Invalidate any previous unused tokens for this user
-    await db
-      .update(passwordResets)
-      .set({ usedAt: new Date() })
-      .where(and(eq(passwordResets.userId, user.id), sql`used_at IS NULL`));
-
-    const token = crypto.randomBytes(32).toString("hex");
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
-    await db.insert(passwordResets).values({
-      userId: user.id,
-      token,
-      expiresAt,
-    });
-
-    try {
-      await sendPasswordResetEmail({ to: user.email, name: user.name, token });
-    } catch (e: any) {
-      console.error("[auth] password reset email failed:", e?.message || e);
-      // Still return 200 so we don't leak email existence via timing/status
-    }
-    res.json({ ok: true });
-  });
-
-  // Public — fetch reset token info (so reset page can confirm it's valid before rendering form)
-  app.get("/api/auth/reset-password/:token", async (req, res) => {
-    const [row] = await db
-      .select()
-      .from(passwordResets)
-      .where(eq(passwordResets.token, req.params.token));
-    if (!row) return res.status(404).json({ message: "Invalid reset link" });
-    if (row.usedAt) return res.status(410).json({ message: "This reset link has already been used" });
-    if (new Date(row.expiresAt).getTime() < Date.now())
-      return res.status(410).json({ message: "This reset link has expired" });
-
-    const [user] = await db.select().from(users).where(eq(users.id, row.userId));
-    if (!user) return res.status(404).json({ message: "User not found" });
-    res.json({ email: user.email, name: user.name });
-  });
-
-  app.post("/api/auth/reset-password", passwordLimiter, async (req, res) => {
-    const schema = z.object({
-      token: z.string().min(1),
-      password: z.string().min(8),
-    });
-    const parsed = schema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ message: "Invalid input" });
-
-    const [row] = await db
-      .select()
-      .from(passwordResets)
-      .where(eq(passwordResets.token, parsed.data.token));
-    if (!row) return res.status(404).json({ message: "Invalid reset link" });
-    if (row.usedAt) return res.status(410).json({ message: "This reset link has already been used" });
-    if (new Date(row.expiresAt).getTime() < Date.now())
-      return res.status(410).json({ message: "This reset link has expired" });
-
-    const hash = await hashPassword(parsed.data.password);
-    await db.update(users).set({ passwordHash: hash }).where(eq(users.id, row.userId));
-    await db.update(passwordResets).set({ usedAt: new Date() }).where(eq(passwordResets.id, row.id));
-    res.json({ ok: true });
-  });
-
-  app.post("/api/auth/change-password", passwordLimiter, requireAuth, async (req, res) => {
-    const schema = z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(8) });
-    const parsed = schema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ message: "Invalid input" });
-
-    const [user] = await db.select().from(users).where(eq(users.id, (req.user as any).id));
-    if (!user || !user.passwordHash) return res.status(404).json({ message: "User not found" });
-    const bcrypt = await import("bcryptjs");
-    const ok = await bcrypt.compare(parsed.data.currentPassword, user.passwordHash);
-    if (!ok) return res.status(400).json({ message: "Current password is incorrect" });
-    const newHash = await hashPassword(parsed.data.newPassword);
-    await db.update(users).set({ passwordHash: newHash }).where(eq(users.id, user.id));
-    res.json({ ok: true });
-  });
-
-  // ==========================================================================
-  // Invitations
-  // ==========================================================================
-  app.post("/api/admin/invitations", requireAdmin, async (req, res) => {
-    const schema = z.object({
-      email: z.string().email(),
-      name: z.string().min(1),
-      role: z.enum(["admin", "user"]).default("user"),
-    });
-    const parsed = schema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ message: "Invalid input" });
-
-    const email = parsed.data.email.toLowerCase();
-    const [existing] = await db.select().from(users).where(eq(users.email, email));
-    if (existing) return res.status(409).json({ message: "User with this email already exists" });
-
-    const token = crypto.randomBytes(32).toString("hex");
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-
-    const [row] = await db
-      .insert(invitations)
-      .values({
-        email,
-        name: parsed.data.name,
-        role: parsed.data.role,
-        token,
-        expiresAt,
-        invitedByUserId: (req.user as any).id,
-      })
-      .returning();
-
-    try {
-      await sendInvitationEmail({
-        to: email,
-        name: parsed.data.name,
-        token,
-        invitedByName: (req.user as any).name || "An admin",
-      });
-    } catch (e: any) {
-      console.error("[invite] email send failed:", e?.message || e);
-      return res.status(500).json({ message: "Failed to send invitation email", invitation: row });
-    }
-
-    res.json({ invitation: { ...row, token: undefined } });
-  });
-
-  app.get("/api/admin/invitations", requireAdmin, async (_req, res) => {
-    const rows = await db.select().from(invitations).orderBy(desc(invitations.createdAt));
-    res.json(rows.map((r) => ({ ...r, token: undefined })));
-  });
-
-  app.delete("/api/admin/invitations/:id", requireAdmin, async (req, res) => {
-    await db.delete(invitations).where(eq(invitations.id, req.params.id));
-    res.json({ ok: true });
-  });
-
-  // Public — fetch invitation by token (for the accept-invite page to show name/email)
-  app.get("/api/invitations/:token", async (req, res) => {
-    const [row] = await db.select().from(invitations).where(eq(invitations.token, req.params.token));
-    if (!row) return res.status(404).json({ message: "Invitation not found" });
-    if (row.acceptedAt) return res.status(410).json({ message: "Invitation already used" });
-    if (new Date(row.expiresAt).getTime() < Date.now())
-      return res.status(410).json({ message: "Invitation expired" });
-    res.json({ email: row.email, name: row.name, role: row.role });
-  });
-
-  app.post("/api/auth/accept-invite", inviteAcceptLimiter, async (req, res) => {
-    const schema = z.object({ token: z.string().min(1), password: z.string().min(8) });
-    const parsed = schema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ message: "Invalid input" });
-
-    const [inv] = await db.select().from(invitations).where(eq(invitations.token, parsed.data.token));
-    if (!inv) return res.status(404).json({ message: "Invitation not found" });
-    if (inv.acceptedAt) return res.status(410).json({ message: "Invitation already used" });
-    if (new Date(inv.expiresAt).getTime() < Date.now())
-      return res.status(410).json({ message: "Invitation expired" });
-
-    const [existing] = await db.select().from(users).where(eq(users.email, inv.email));
-    if (existing) return res.status(409).json({ message: "User already exists" });
-
-    const passwordHash = await hashPassword(parsed.data.password);
-    const [user] = await db
-      .insert(users)
-      .values({
-        email: inv.email,
-        name: inv.name,
-        role: inv.role,
-        passwordHash,
-        lastLoginAt: new Date(),
-      })
-      .returning();
-
-    await db.update(invitations).set({ acceptedAt: new Date() }).where(eq(invitations.id, inv.id));
-
-    req.login(toPublicUser(user), (e) => {
-      if (e) return res.status(500).json({ message: "Created but failed to log in" });
-      res.json({ user: toPublicUser(user) });
-    });
-  });
-
-  // ==========================================================================
   // Sites
   // ==========================================================================
   app.get("/api/sites", requireAuth, async (req, res) => {
     const user = req.user as any;
-    const where = user.role === "admin" ? undefined : eq(sites.ownerUserId, user.id);
+    const where = canManageAllSites(user) ? undefined : eq(sites.ownerUserId, user.id);
     const baseQuery = db.select().from(sites);
     const rows = await (where ? baseQuery.where(where) : baseQuery).orderBy(desc(sites.createdAt));
     // Attach derived counts
@@ -320,7 +143,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const [site] = await db.select().from(sites).where(eq(sites.id, req.params.id));
     if (!site) return res.status(404).json({ message: "Site not found" });
     const user = req.user as any;
-    if (user.role !== "admin" && site.ownerUserId !== user.id)
+    if (!canManageAllSites(user) && site.ownerUserId !== user.id)
       return res.status(403).json({ message: "Forbidden" });
     res.json(site);
   });
@@ -364,7 +187,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const [existing] = await db.select().from(sites).where(eq(sites.id, req.params.id));
     if (!existing) return res.status(404).json({ message: "Site not found" });
     const user = req.user as any;
-    if (user.role !== "admin" && existing.ownerUserId !== user.id)
+    if (!canManageAllSites(user) && existing.ownerUserId !== user.id)
       return res.status(403).json({ message: "Forbidden" });
     const parsed = insertSiteSchema.partial().safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ message: "Invalid input" });
@@ -376,7 +199,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const [existing] = await db.select().from(sites).where(eq(sites.id, req.params.id));
     if (!existing) return res.status(404).json({ message: "Site not found" });
     const user = req.user as any;
-    if (user.role !== "admin" && existing.ownerUserId !== user.id)
+    if (!canManageAllSites(user) && existing.ownerUserId !== user.id)
       return res.status(403).json({ message: "Forbidden" });
     const [row] = await db
       .update(sites)
@@ -390,7 +213,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const [existing] = await db.select().from(sites).where(eq(sites.id, req.params.id));
     if (!existing) return res.status(404).json({ message: "Site not found" });
     const user = req.user as any;
-    if (user.role !== "admin" && existing.ownerUserId !== user.id)
+    if (!canManageAllSites(user) && existing.ownerUserId !== user.id)
       return res.status(403).json({ message: "Forbidden" });
     const [row] = await db
       .update(sites)
@@ -404,7 +227,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const [existing] = await db.select().from(sites).where(eq(sites.id, req.params.id));
     if (!existing) return res.status(404).json({ message: "Site not found" });
     const user = req.user as any;
-    if (user.role !== "admin" && existing.ownerUserId !== user.id)
+    if (!canManageAllSites(user) && existing.ownerUserId !== user.id)
       return res.status(403).json({ message: "Forbidden" });
     await db.delete(sites).where(eq(sites.id, req.params.id));
     res.json({ ok: true });
@@ -415,7 +238,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const [site] = await db.select().from(sites).where(eq(sites.id, req.params.id));
     if (!site) return res.status(404).json({ message: "Site not found" });
     const user = req.user as any;
-    if (user.role !== "admin" && site.ownerUserId !== user.id)
+    if (!canManageAllSites(user) && site.ownerUserId !== user.id)
       return res.status(403).json({ message: "Forbidden" });
     if (isScanInFlight(site.id)) {
       return res.status(409).json({ message: "A scan is already running for this site" });
@@ -457,7 +280,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const [site] = await db.select().from(sites).where(eq(sites.id, req.params.id));
     if (!site) return res.status(404).json({ message: "Site not found" });
     const user = req.user as any;
-    if (user.role !== "admin" && site.ownerUserId !== user.id)
+    if (!canManageAllSites(user) && site.ownerUserId !== user.id)
       return res.status(403).json({ message: "Forbidden" });
 
     const limit = Math.min(Math.max(parseInt(req.query.limit as string) || 50, 1), 500);
@@ -476,7 +299,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const [site] = await db.select().from(sites).where(eq(sites.id, req.params.id));
     if (!site) return res.status(404).json({ message: "Site not found" });
     const user = req.user as any;
-    if (user.role !== "admin" && site.ownerUserId !== user.id)
+    if (!canManageAllSites(user) && site.ownerUserId !== user.id)
       return res.status(403).json({ message: "Forbidden" });
 
     const [scan] = await db
@@ -573,15 +396,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(
       rows.map((u) => ({
         ...u,
-        passwordHash: undefined,
+        // Derived display role (roles are owned by the Portal, shown read-only).
+        role: (u.roles ?? []).includes("admin") ? "admin" : "user",
         isOnline: isUserPresent(u.id),
       })),
     );
   });
 
+  // Roles are owned by the Portal and overwritten on each SSO login, so they
+  // are read-only here — only local profile fields (name) can be edited.
   app.put("/api/admin/users/:id", requireAdmin, async (req, res) => {
     const schema = z.object({
-      role: z.enum(["admin", "user"]).optional(),
       name: z.string().min(1).optional(),
     });
     const parsed = schema.safeParse(req.body);
@@ -592,7 +417,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       .where(eq(users.id, req.params.id))
       .returning();
     if (!row) return res.status(404).json({ message: "User not found" });
-    res.json({ ...row, passwordHash: undefined });
+    res.json({ ...row, role: (row.roles ?? []).includes("admin") ? "admin" : "user" });
   });
 
   app.delete("/api/admin/users/:id", requireAdmin, async (req, res) => {
@@ -701,10 +526,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Recipient directory (users + teams for site notification pickers)
   // ==========================================================================
   app.get("/api/recipient-directory", requireAuth, async (_req, res) => {
-    const allUsers = await db
-      .select({ id: users.id, name: users.name, email: users.email, role: users.role })
+    const rawUsers = await db
+      .select({ id: users.id, name: users.name, email: users.email, roles: users.roles })
       .from(users)
       .orderBy(users.name);
+    const allUsers = rawUsers.map((u) => ({
+      id: u.id,
+      name: u.name,
+      email: u.email,
+      role: (u.roles ?? []).includes("admin") ? "admin" : "user",
+    }));
 
     const teams = await db
       .select()
@@ -745,7 +576,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       defaultReportFrequency: user.defaultReportFrequency,
       email: user.email,
       name: user.name,
-      role: user.role,
+      role: (user.roles ?? []).includes("admin") ? "admin" : "user",
     });
   });
 
@@ -771,7 +602,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     const rows = await db
       .select()
       .from(notifications)
-      .where(user.role === "admin" ? sql`true` : eq(notifications.userId, user.id))
+      .where(canManageAllSites(user) ? sql`true` : eq(notifications.userId, user.id))
       .orderBy(desc(notifications.createdAt))
       .limit(limit)
       .offset(offset);
@@ -791,7 +622,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ==========================================================================
   app.get("/api/dashboard/summary", requireAuth, async (req, res) => {
     const user = req.user as any;
-    const isAdmin = user.role === "admin";
+    const isAdmin = canManageAllSites(user);
 
     const since30 = new Date();
     since30.setDate(since30.getDate() - 30);
