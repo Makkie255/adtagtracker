@@ -2,8 +2,6 @@ import type { Express, Request, Response, NextFunction } from "express";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import passport from "passport";
-import { Strategy as LocalStrategy } from "passport-local";
-import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import { eq } from "drizzle-orm";
 import { db, pool } from "./db";
@@ -11,11 +9,14 @@ import { users, type User } from "@shared/schema";
 
 declare global {
   namespace Express {
-    // Augment Passport's user type with our schema type
+    // Augment Passport's user type with our schema type. `roles` is the source
+    // of truth (from the Portal); `role` is a derived convenience for display
+    // and legacy checks ("admin" when the user is an admin, else "user").
     interface User {
       id: string;
       email: string;
       name: string;
+      roles: string[];
       role: string;
     }
   }
@@ -54,24 +55,8 @@ export function setupAuth(app: Express) {
     }),
   );
 
-  passport.use(
-    new LocalStrategy(
-      { usernameField: "email", passwordField: "password" },
-      async (email, password, done) => {
-        try {
-          const [row] = await db.select().from(users).where(eq(users.email, email.toLowerCase()));
-          if (!row || !row.passwordHash) {
-            return done(null, false, { message: "Invalid email or password" });
-          }
-          const ok = await bcrypt.compare(password, row.passwordHash);
-          if (!ok) return done(null, false, { message: "Invalid email or password" });
-          return done(null, toPublicUser(row));
-        } catch (e) {
-          return done(e as Error);
-        }
-      },
-    ),
-  );
+  // No local password strategy — sessions are established only via the Portal
+  // SSO hand-off (see server/sso.ts and the POST /sso route in routes.ts).
 
   passport.serializeUser((user: any, done) => done(null, user.id));
   passport.deserializeUser(async (id: string, done) => {
@@ -88,12 +73,29 @@ export function setupAuth(app: Express) {
   app.use(passport.session());
 }
 
-export function toPublicUser(u: User) {
-  return { id: u.id, email: u.email, name: u.name, role: u.role };
+/** Derived display/legacy role: "admin" when the user holds the admin role. */
+export function primaryRole(roles: string[] | null | undefined): string {
+  return (roles ?? []).includes("admin") ? "admin" : "user";
 }
 
-export async function hashPassword(plain: string) {
-  return bcrypt.hash(plain, 12);
+/** True when the user holds the admin role. */
+export function isAdmin(user: { roles?: string[] } | null | undefined): boolean {
+  return (user?.roles ?? []).includes("admin");
+}
+
+/**
+ * Admins and managers can see and manage every site (not just their own). This
+ * governs site data access; the Admin Panel (users, tag platforms, teams) stays
+ * admin-only via requireAdmin.
+ */
+export function canManageAllSites(user: { roles?: string[] } | null | undefined): boolean {
+  const roles = user?.roles ?? [];
+  return roles.includes("admin") || roles.includes("manager");
+}
+
+export function toPublicUser(u: User) {
+  const roles = u.roles ?? [];
+  return { id: u.id, email: u.email, name: u.name, roles, role: primaryRole(roles) };
 }
 
 // Middleware helpers
@@ -103,7 +105,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
 }
 
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
-  if (req.isAuthenticated && req.isAuthenticated() && (req.user as any)?.role === "admin") {
+  if (req.isAuthenticated && req.isAuthenticated() && isAdmin(req.user as Express.User)) {
     return next();
   }
   return res.status(403).json({ message: "Admin only" });

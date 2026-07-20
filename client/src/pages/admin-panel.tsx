@@ -28,7 +28,7 @@ import {
   DialogFooter,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Plus, Trash2, UserPlus, Send, Loader2, Pencil, CheckCircle2 } from "lucide-react";
+import { Plus, Trash2, Loader2, Pencil } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { format } from "date-fns";
@@ -36,11 +36,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
 import {
   useAdminUsers,
-  useAdminInvitations,
   useAdminNotificationTeams,
-  useCreateInvitation,
-  useDeleteInvitation,
-  useUpdateUser,
   useDeleteUser,
   useCreateNotificationTeam,
   useUpdateNotificationTeam,
@@ -48,7 +44,6 @@ import {
   useTagPlatforms,
   useCreateTagPlatform,
   useDeleteTagPlatform,
-  formatRelative,
   formatUserActivity,
   type ApiNotificationTeam,
 } from "@/lib/api";
@@ -56,27 +51,15 @@ import {
 export default function AdminPanel() {
   const { user } = useAuth();
   const usersQ = useAdminUsers();
-  const invitesQ = useAdminInvitations();
   const teamsQ = useAdminNotificationTeams();
   const platformsQ = useTagPlatforms();
 
-  const createInvite = useCreateInvitation();
-  const deleteInvite = useDeleteInvitation();
-  const updateUser = useUpdateUser();
   const deleteUser = useDeleteUser();
   const createTeam = useCreateNotificationTeam();
   const updateTeam = useUpdateNotificationTeam();
   const deleteTeam = useDeleteNotificationTeam();
   const createPlatform = useCreateTagPlatform();
   const deletePlatform = useDeleteTagPlatform();
-
-  // Invite dialog
-  const [inviteOpen, setInviteOpen] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteName, setInviteName] = useState("");
-  const [inviteRole, setInviteRole] = useState<"admin" | "user">("user");
-  const [inviteError, setInviteError] = useState<string | null>(null);
-  const [inviteFlash, setInviteFlash] = useState<string | null>(null);
 
   // New tag platform dialog
   const [platformOpen, setPlatformOpen] = useState(false);
@@ -134,36 +117,6 @@ export default function AdminPanel() {
     setTeamOpen(false);
   };
 
-  const handleSendInvite = async () => {
-    setInviteError(null);
-    if (!inviteEmail.trim() || !inviteName.trim()) {
-      setInviteError("Email and name are required");
-      return;
-    }
-    try {
-      await createInvite.mutateAsync({
-        email: inviteEmail.trim(),
-        name: inviteName.trim(),
-        role: inviteRole,
-      });
-      setInviteFlash(`Invitation sent to ${inviteEmail}`);
-      setInviteEmail("");
-      setInviteName("");
-      setInviteRole("user");
-      setInviteOpen(false);
-      setTimeout(() => setInviteFlash(null), 3000);
-    } catch (e: any) {
-      const message = String(e?.message || "");
-      const match = message.match(/^\d+:\s*(.+)$/);
-      let nice = match ? match[1] : message;
-      try {
-        const parsed = JSON.parse(nice);
-        if (parsed.message) nice = parsed.message;
-      } catch {}
-      setInviteError(nice || "Failed to send invitation");
-    }
-  };
-
   const handleAddPlatform = async () => {
     if (!pName.trim()) return;
     await createPlatform.mutateAsync({
@@ -184,82 +137,24 @@ export default function AdminPanel() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold">Admin panel</h1>
-        <p className="text-sm text-muted-foreground mt-1">Manage users, teams, invitations, and the tag platform catalog</p>
+        <p className="text-sm text-muted-foreground mt-1">Manage users, teams, and the tag platform catalog</p>
       </div>
-
-      {inviteFlash && (
-        <div className="rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm text-emerald-600 inline-flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4" />
-          {inviteFlash}
-        </div>
-      )}
 
       <Tabs defaultValue="users">
         <TabsList>
           <TabsTrigger value="users">Users</TabsTrigger>
           <TabsTrigger value="teams">Recipient teams</TabsTrigger>
-          <TabsTrigger value="invitations">Invitations</TabsTrigger>
           <TabsTrigger value="platforms">Tag platforms</TabsTrigger>
         </TabsList>
 
         {/* ============== USERS ============== */}
         <TabsContent value="users" className="space-y-4 mt-6">
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between gap-4">
+            <CardHeader>
               <div>
                 <CardTitle>Users</CardTitle>
                 <p className="text-sm text-muted-foreground mt-1">All active accounts in your workspace</p>
               </div>
-              <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
-                <DialogTrigger asChild>
-                  <Button>
-                    <UserPlus className="w-4 h-4 mr-2" />
-                    Invite user
-                  </Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>Invite a new user</DialogTitle>
-                    <DialogDescription>
-                      They'll receive an email with a link to set their password and finish creating their account.
-                    </DialogDescription>
-                  </DialogHeader>
-                  <div className="space-y-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="invite-name">Name</Label>
-                      <Input id="invite-name" value={inviteName} onChange={(e) => setInviteName(e.target.value)} placeholder="Jane Smith" />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="invite-email">Email</Label>
-                      <Input id="invite-email" type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} placeholder="jane@example.com" />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="invite-role">Role</Label>
-                      <Select value={inviteRole} onValueChange={(v) => setInviteRole(v as "admin" | "user")}>
-                        <SelectTrigger id="invite-role">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="user">User</SelectItem>
-                          <SelectItem value="admin">Admin</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    {inviteError && (
-                      <div className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-                        {inviteError}
-                      </div>
-                    )}
-                  </div>
-                  <DialogFooter>
-                    <Button variant="outline" onClick={() => setInviteOpen(false)}>Cancel</Button>
-                    <Button onClick={handleSendInvite} disabled={createInvite.isPending}>
-                      {createInvite.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Send className="w-4 h-4 mr-2" />}
-                      Send invitation
-                    </Button>
-                  </DialogFooter>
-                </DialogContent>
-              </Dialog>
             </CardHeader>
             <CardContent>
               {usersQ.isLoading ? (
@@ -281,21 +176,7 @@ export default function AdminPanel() {
                         <TableCell className="font-medium">{u.name}</TableCell>
                         <TableCell className="font-mono text-sm text-muted-foreground">{u.email}</TableCell>
                         <TableCell>
-                          <Select
-                            value={u.role}
-                            onValueChange={(v) =>
-                              updateUser.mutate({ id: u.id, body: { role: v as "admin" | "user" } })
-                            }
-                            disabled={u.id === user?.id}
-                          >
-                            <SelectTrigger className="w-[110px]">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="user">User</SelectItem>
-                              <SelectItem value="admin">Admin</SelectItem>
-                            </SelectContent>
-                          </Select>
+                          <Badge variant="outline" className="capitalize">{u.role}</Badge>
                         </TableCell>
                         <TableCell>
                           {(() => {
@@ -494,68 +375,6 @@ export default function AdminPanel() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
-        </TabsContent>
-
-        {/* ============== INVITATIONS ============== */}
-        <TabsContent value="invitations" className="space-y-4 mt-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Pending invitations</CardTitle>
-              <p className="text-sm text-muted-foreground mt-1">Users who haven't accepted their invite yet</p>
-            </CardHeader>
-            <CardContent>
-              {invitesQ.isLoading ? (
-                <div className="py-12 text-center text-muted-foreground"><Loader2 className="w-5 h-5 animate-spin inline mr-2" />Loading…</div>
-              ) : (invitesQ.data || []).length === 0 ? (
-                <p className="text-center py-12 text-sm text-muted-foreground">No pending invitations.</p>
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Email</TableHead>
-                      <TableHead>Role</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Sent</TableHead>
-                      <TableHead className="w-[80px]"></TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {(invitesQ.data || []).map((inv) => {
-                      const accepted = !!inv.acceptedAt;
-                      const expired = !accepted && new Date(inv.expiresAt).getTime() < Date.now();
-                      return (
-                        <TableRow key={inv.id}>
-                          <TableCell className="font-medium">{inv.name}</TableCell>
-                          <TableCell className="font-mono text-sm">{inv.email}</TableCell>
-                          <TableCell><Badge variant="outline" className="capitalize">{inv.role}</Badge></TableCell>
-                          <TableCell>
-                            {accepted ? (
-                              <Badge variant="secondary">Accepted</Badge>
-                            ) : expired ? (
-                              <Badge variant="destructive">Expired</Badge>
-                            ) : (
-                              <Badge>Pending</Badge>
-                            )}
-                          </TableCell>
-                          <TableCell className="text-sm text-muted-foreground">{formatRelative(inv.createdAt)}</TableCell>
-                          <TableCell>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => deleteInvite.mutate(inv.id)}
-                            >
-                              <Trash2 className="w-4 h-4 text-destructive" />
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              )}
-            </CardContent>
-          </Card>
         </TabsContent>
 
         {/* ============== TAG PLATFORMS ============== */}

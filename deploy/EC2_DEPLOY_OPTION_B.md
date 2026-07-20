@@ -119,14 +119,22 @@ DATABASE_URL=postgresql://adtag:YOUR_PASSWORD@localhost:5432/adtag
 # Generate with: openssl rand -hex 32
 SESSION_SECRET=
 
-# Leave blank if you don't have a Resend account yet — emails will log to console instead
-RESEND_API_KEY=
-RESEND_FROM=Ad Tag Tracker <noreply@yourdomain.com>
+# Must match SSO_SECRET_AD_TAG_TRACKER in the Internal Portal backend's env.
+# Verifies the short-lived signed SSO ticket the Portal hands off on login.
+SSO_SECRET_AD_TAG_TRACKER=
 
-# Use http + Elastic IP for now (no domain yet)
+# Leave blank if you don't have a Brevo account yet — emails will log to console instead
+BREVO_API_KEY=
+BREVO_FROM=Ad Tag Tracker <noreply@yourdomain.com>
+
+# Use http + Elastic IP for now (no domain yet).
+# NOTE: SSO requires HTTPS in production — add a domain + SSL before going live (see last section).
 APP_URL=http://<ELASTIC_IP>
 
-# Admin account created on first boot
+# Optional — link back to the Internal Portal
+VITE_PORTAL_URL=https://portal.rallyad.com
+
+# Admin profile (no password) created on first boot; links to the Portal account by email on first SSO login
 ADMIN_EMAIL=lucan@rallyad.com
 ADMIN_NAME=Lucan Marsh
 ```
@@ -159,7 +167,7 @@ Check it started cleanly:
 pm2 logs adtag-tracker --lines 50
 ```
 
-> **Important:** Look for the one-time admin password in the logs — this is how you first log in.
+> **Note:** There is no admin password in the logs. Login is SSO-only — the first boot creates a passwordless admin profile that links to your Internal Portal account (matched by `ADMIN_EMAIL`) the first time you sign in through the Portal.
 
 ---
 
@@ -217,9 +225,9 @@ Open your browser and go to:
 http://<ELASTIC_IP>
 ```
 
-You should see the AdTagTracker login page. Sign in with:
-- **Email**: `lucan@rallyad.com`
-- **Password**: the one-time password from the PM2 logs (Step 7)
+You should see the AdTagTracker sign-in screen, which redirects to the Internal Portal. Open the tool tile from inside the RallyAd Internal Portal (signed in as `lucan@rallyad.com`) — the Portal hands off a signed SSO ticket and your session is created automatically. There is no password to enter.
+
+> Over plain HTTP (Elastic IP only) SSO is fine for a first smoke test, but add a domain + SSL (last section) before real use — the SSO ticket is a bearer credential and must travel over HTTPS.
 
 ---
 

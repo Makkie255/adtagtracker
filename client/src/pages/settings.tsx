@@ -13,25 +13,19 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useEffect, useState } from "react";
-import { User, Bell, Key, ChevronDown, Loader2, CheckCircle2, Upload } from "lucide-react";
-import { useMySettings, useUpdateMySettings, useChangePassword } from "@/lib/api";
+import { User, Bell, ChevronDown, Loader2, CheckCircle2, Upload } from "lucide-react";
+import { useMySettings, useUpdateMySettings } from "@/lib/api";
 import { BulkSiteImport } from "@/components/bulk-site-import";
 
 export default function Settings() {
   const meQ = useMySettings();
   const updateMe = useUpdateMySettings();
-  const changePw = useChangePassword();
 
   const [name, setName] = useState("");
   const [monthlyReportsOptIn, setMonthlyReportsOptIn] = useState(false);
   const [defaultReportFrequency, setDefaultReportFrequency] = useState("monthly");
   const [profileSaved, setProfileSaved] = useState(false);
   const [reportsSaved, setReportsSaved] = useState(false);
-
-  const [currentPw, setCurrentPw] = useState("");
-  const [newPw, setNewPw] = useState("");
-  const [confirmPw, setConfirmPw] = useState("");
-  const [pwMsg, setPwMsg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
   useEffect(() => {
     if (meQ.data) {
@@ -54,34 +48,6 @@ export default function Settings() {
   const handleSaveReports = async () => {
     await updateMe.mutateAsync({ monthlyReportsOptIn, defaultReportFrequency });
     flash(setReportsSaved);
-  };
-
-  const handleChangePassword = async () => {
-    setPwMsg(null);
-    if (newPw.length < 8) {
-      setPwMsg({ kind: "err", text: "New password must be at least 8 characters" });
-      return;
-    }
-    if (newPw !== confirmPw) {
-      setPwMsg({ kind: "err", text: "Passwords don't match" });
-      return;
-    }
-    try {
-      await changePw.mutateAsync({ currentPassword: currentPw, newPassword: newPw });
-      setCurrentPw("");
-      setNewPw("");
-      setConfirmPw("");
-      setPwMsg({ kind: "ok", text: "Password updated" });
-    } catch (e: any) {
-      const message = String(e?.message || "");
-      const match = message.match(/^\d+:\s*(.+)$/);
-      let nice = match ? match[1] : message;
-      try {
-        const parsed = JSON.parse(nice);
-        if (parsed.message) nice = parsed.message;
-      } catch {}
-      setPwMsg({ kind: "err", text: nice || "Failed to update password" });
-    }
   };
 
   if (meQ.isLoading) {
@@ -236,76 +202,6 @@ export default function Settings() {
         </Collapsible>
       </Card>
 
-      <Card>
-        <Collapsible>
-          <CollapsibleTrigger asChild>
-            <CardHeader className="group cursor-pointer flex flex-row items-center justify-between space-y-0 rounded-lg hover:bg-muted/50 transition-colors">
-              <div>
-                <div className="flex items-center gap-2">
-                  <Key className="w-5 h-5 text-muted-foreground" />
-                  <CardTitle>Change password</CardTitle>
-                </div>
-                <p className="text-sm text-muted-foreground mt-1">Update the password you use to sign in</p>
-              </div>
-              <ChevronDown className="h-4 w-4 shrink-0 transition-transform duration-200 group-data-[state=open]:rotate-180" />
-            </CardHeader>
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <CardContent className="space-y-4 pt-0">
-              <div className="space-y-2">
-                <Label htmlFor="current-pw">Current password</Label>
-                <Input
-                  id="current-pw"
-                  type="password"
-                  autoComplete="current-password"
-                  value={currentPw}
-                  onChange={(e) => setCurrentPw(e.target.value)}
-                />
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="new-pw">New password</Label>
-                  <Input
-                    id="new-pw"
-                    type="password"
-                    autoComplete="new-password"
-                    placeholder="At least 8 characters"
-                    value={newPw}
-                    onChange={(e) => setNewPw(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="confirm-pw">Confirm new password</Label>
-                  <Input
-                    id="confirm-pw"
-                    type="password"
-                    autoComplete="new-password"
-                    value={confirmPw}
-                    onChange={(e) => setConfirmPw(e.target.value)}
-                  />
-                </div>
-              </div>
-              {pwMsg && (
-                <div
-                  className={
-                    pwMsg.kind === "ok"
-                      ? "rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm text-emerald-600"
-                      : "rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-                  }
-                >
-                  {pwMsg.text}
-                </div>
-              )}
-              <div className="flex justify-end">
-                <Button onClick={handleChangePassword} disabled={changePw.isPending || !currentPw || !newPw}>
-                  {changePw.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                  Update password
-                </Button>
-              </div>
-            </CardContent>
-          </CollapsibleContent>
-        </Collapsible>
-      </Card>
     </div>
   );
 }

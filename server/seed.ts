@@ -1,8 +1,6 @@
-import crypto from "crypto";
 import { eq, sql } from "drizzle-orm";
 import { db } from "./db";
 import { tagPlatforms, users } from "@shared/schema";
-import { hashPassword } from "./auth";
 
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || "Lucan@rallyad.com").toLowerCase();
 const ADMIN_NAME = process.env.ADMIN_NAME || "Lucan Marsh";
@@ -44,37 +42,22 @@ const SEED_PLATFORMS: Array<{
   { name: "The Trade Desk", company: "Trade Desk", matchers: ["adsrvr\\.org"], category: "advertising" },
 ];
 
-function generatePassword(): string {
-  // 16 chars, mixed case + digits + symbols — readable but strong
-  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#%&*";
-  let out = "";
-  for (let i = 0; i < 16; i++) {
-    out += alphabet[crypto.randomInt(0, alphabet.length)];
-  }
-  return out;
-}
-
 export async function ensureSeed() {
-  // 1) Admin user
+  // 1) Admin user — no local password; the row links to the Portal account by
+  // email on first SSO login, and roles are refreshed from the ticket each time.
   const [existing] = await db.select().from(users).where(eq(users.email, ADMIN_EMAIL));
   if (!existing) {
-    const password = generatePassword();
-    const passwordHash = await hashPassword(password);
     await db.insert(users).values({
       email: ADMIN_EMAIL,
       name: ADMIN_NAME,
-      role: "admin",
-      passwordHash,
+      roles: ["admin"],
       monthlyReportsOptIn: true,
     });
     console.log("\n" + "═".repeat(72));
-    console.log("ADMIN ACCOUNT CREATED");
+    console.log("ADMIN PROFILE SEEDED");
     console.log("─".repeat(72));
-    console.log(`  Email:    ${ADMIN_EMAIL}`);
-    console.log(`  Password: ${password}`);
-    console.log("─".repeat(72));
-    console.log("  Save this password — it won't be shown again.");
-    console.log("  Change it after first login (Profile → Change password).");
+    console.log(`  Email: ${ADMIN_EMAIL}`);
+    console.log("  Sign in via the Internal Portal (no local password).");
     console.log("═".repeat(72) + "\n");
   }
 

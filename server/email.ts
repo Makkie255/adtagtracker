@@ -1,18 +1,35 @@
-import { Resend } from "resend";
+// Transactional email via Brevo (https://developers.brevo.com). Auth emails
+// (invite / password reset) were removed with the move to Portal SSO; only
+// product notifications (change alerts, scan failures, monthly reports) remain.
 
-const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const FROM = process.env.RESEND_FROM || "Ad Tag Tracker <onboarding@resend.dev>";
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
+// Sender in "Name <email>" form, e.g. "Ad Tag Tracker <noreply@rallyadmedia.com>".
+const FROM = process.env.BREVO_FROM || "Ad Tag Tracker <noreply@rallyadmedia.com>";
 const APP_URL = process.env.APP_URL || "http://localhost:5000";
+const BREVO_ENDPOINT = "https://api.brevo.com/v3/smtp/email";
 
-let resend: Resend | null = null;
-if (RESEND_API_KEY) {
-  resend = new Resend(RESEND_API_KEY);
-} else {
-  console.warn("[email] RESEND_API_KEY not set — emails will be logged to console instead of sent.");
+if (!BREVO_API_KEY) {
+  console.warn("[email] BREVO_API_KEY not set — emails will be logged to console instead of sent.");
+}
+
+/** Parse a "Name <email>" sender string into Brevo's sender object. */
+function parseSender(from: string): { name: string; email: string } {
+  const match = from.match(/^\s*(.*?)\s*<\s*([^>]+)\s*>\s*$/);
+  if (match) return { name: match[1] || "Ad Tag Tracker", email: match[2] };
+  return { name: "Ad Tag Tracker", email: from.trim() };
+}
+
+/** Split a single/comma-joined recipient string into Brevo recipient objects. */
+function parseRecipients(to: string): { email: string }[] {
+  return to
+    .split(",")
+    .map((e) => e.trim())
+    .filter(Boolean)
+    .map((email) => ({ email }));
 }
 
 async function send(opts: { to: string; subject: string; html: string; text: string }) {
-  if (!resend) {
+  if (!BREVO_API_KEY) {
     console.log("\n=== [email:dev] would send ===");
     console.log("to:", opts.to);
     console.log("subject:", opts.subject);
@@ -20,18 +37,27 @@ async function send(opts: { to: string; subject: string; html: string; text: str
     console.log("=== end ===\n");
     return { id: "dev-noop" };
   }
-  const { data, error } = await resend.emails.send({
-    from: FROM,
-    to: opts.to,
-    subject: opts.subject,
-    html: opts.html,
-    text: opts.text,
+  const res = await fetch(BREVO_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "api-key": BREVO_API_KEY,
+      "content-type": "application/json",
+      accept: "application/json",
+    },
+    body: JSON.stringify({
+      sender: parseSender(FROM),
+      to: parseRecipients(opts.to),
+      subject: opts.subject,
+      htmlContent: opts.html,
+      textContent: opts.text,
+    }),
   });
-  if (error) {
-    console.error("[email] send failed:", error);
-    throw error;
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    console.error("[email] send failed:", res.status, detail);
+    throw new Error(`Brevo send failed: ${res.status}`);
   }
-  return data;
+  return res.json().catch(() => ({}));
 }
 
 const wrap = (innerHtml: string) => `<!doctype html>
@@ -43,51 +69,6 @@ const wrap = (innerHtml: string) => `<!doctype html>
     <div style="font-size:12px;color:#6b7280;">Sent by Ad Tag Tracker · <a href="${APP_URL}" style="color:#6b7280;">${APP_URL}</a></div>
   </div>
 </body></html>`;
-
-export async function sendInvitationEmail(opts: {
-  to: string;
-  name: string;
-  token: string;
-  invitedByName: string;
-}) {
-  const link = `${APP_URL}/accept-invite?token=${encodeURIComponent(opts.token)}`;
-  const html = wrap(`
-    <h2 style="margin:0 0 16px;font-size:22px;">You're invited to Ad Tag Tracker</h2>
-    <p style="line-height:1.5;color:#374151;">
-      ${escapeHtml(opts.invitedByName)} invited you (${escapeHtml(opts.to)}) to join Ad Tag Tracker.
-      Click the button below to set a password and finish creating your account.
-    </p>
-    <p style="margin:24px 0;">
-      <a href="${link}" style="background:#0b0c0f;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:500;">Accept invitation</a>
-    </p>
-    <p style="font-size:13px;color:#6b7280;">Or paste this link in your browser:<br/><span style="word-break:break-all;">${link}</span></p>
-    <p style="font-size:13px;color:#6b7280;">This link expires in 7 days.</p>
-  `);
-  const text = `${opts.invitedByName} invited you to join Ad Tag Tracker.\n\nAccept here: ${link}\n\nThis link expires in 7 days.`;
-  return send({ to: opts.to, subject: "You're invited to Ad Tag Tracker", html, text });
-}
-
-export async function sendPasswordResetEmail(opts: {
-  to: string;
-  name: string;
-  token: string;
-}) {
-  const link = `${APP_URL}/reset-password?token=${encodeURIComponent(opts.token)}`;
-  const html = wrap(`
-    <h2 style="margin:0 0 16px;font-size:22px;">Reset your password</h2>
-    <p style="line-height:1.5;color:#374151;">
-      Hi ${escapeHtml(opts.name)} — we received a request to reset the password for your Ad Tag Tracker account.
-      Click the button below to choose a new password.
-    </p>
-    <p style="margin:24px 0;">
-      <a href="${link}" style="background:#0b0c0f;color:#fff;padding:12px 20px;border-radius:8px;text-decoration:none;display:inline-block;font-weight:500;">Reset password</a>
-    </p>
-    <p style="font-size:13px;color:#6b7280;">Or paste this link in your browser:<br/><span style="word-break:break-all;">${link}</span></p>
-    <p style="font-size:13px;color:#6b7280;">This link expires in 1 hour. If you didn't request a reset, you can safely ignore this email.</p>
-  `);
-  const text = `Reset your Ad Tag Tracker password:\n\n${link}\n\nThis link expires in 1 hour. If you didn't request a reset, ignore this email.`;
-  return send({ to: opts.to, subject: "Reset your Ad Tag Tracker password", html, text });
-}
 
 export interface ChangeAlertItem {
   tagName: string;

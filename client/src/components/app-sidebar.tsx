@@ -8,6 +8,7 @@ import {
   User,
   ChevronDown,
   LogOut,
+  ArrowLeft,
 } from "lucide-react";
 import {
   Sidebar,
@@ -39,13 +40,18 @@ interface AppSidebarProps {
   userEmail?: string;
 }
 
+// Internal Portal URL (injected at build time). When set, a "Back to Portal"
+// link is shown so users can hop back to the hub they launched this tool from.
+const PORTAL_URL = (import.meta.env.VITE_PORTAL_URL as string | undefined)?.replace(/\/$/, "");
+
 export function AppSidebar({ siteCount = 0, archivedCount = 0, userRole = "user", userName = "User", userEmail }: AppSidebarProps) {
   const [location] = useLocation();
   const { logout } = useAuth();
 
   const handleLogout = () => {
     logout().finally(() => {
-      window.location.href = "/login";
+      // No local login page — the root shows the signed-out screen.
+      window.location.href = "/";
     });
   };
 
@@ -96,6 +102,16 @@ export function AppSidebar({ siteCount = 0, archivedCount = 0, userRole = "user"
           </SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
+              {PORTAL_URL && (
+                <SidebarMenuItem>
+                  <SidebarMenuButton asChild data-testid="link-back-to-portal">
+                    <a href={PORTAL_URL} className="text-muted-foreground">
+                      <ArrowLeft className="w-5 h-5" />
+                      <span>Back to Portal</span>
+                    </a>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              )}
               {menuItems.map((item) => (
                 <SidebarMenuItem key={item.title}>
                   <SidebarMenuButton

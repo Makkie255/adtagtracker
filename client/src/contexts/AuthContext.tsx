@@ -6,6 +6,8 @@ export interface User {
   id: string;
   name: string;
   email: string;
+  roles: string[];
+  // Derived by the server: "admin" when the user holds the admin role.
   role: "user" | "admin";
 }
 
@@ -13,7 +15,6 @@ interface AuthContextValue {
   user: User | null;
   isLoggedIn: boolean;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
 }
@@ -37,15 +38,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     retry: false,
   });
 
-  const login = useCallback(
-    async (email: string, password: string) => {
-      const res = await apiRequest("POST", "/api/auth/login", { email, password });
-      const data = await res.json();
-      qc.setQueryData(["/api/auth/me"], data.user);
-    },
-    [qc],
-  );
-
   const logout = useCallback(async () => {
     await apiRequest("POST", "/api/auth/logout");
     qc.setQueryData(["/api/auth/me"], null);
@@ -60,7 +52,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     user: user ?? null,
     isLoggedIn: !!user,
     isLoading,
-    login,
     logout,
     refresh,
   };
